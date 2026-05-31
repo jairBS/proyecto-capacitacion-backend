@@ -17,6 +17,11 @@ from routers.auth import router as auth_router
 # verificar token
 from utils.auth_handler import verify_token
 from fastapi import Depends
+
+# normalizar texto
+import unicodedata
+import re
+
 # -------------------------
 # Configuración app
 # -------------------------
@@ -49,6 +54,7 @@ question_embeddings = model.encode(questions, convert_to_tensor=True)
 # Request schema
 # -------------------------
 
+
 class ChatRequest(BaseModel):
     message: str
 
@@ -62,9 +68,36 @@ SIMILARITY_THRESHOLD = 0.55  # ajustable
 # Endpoint principal
 # -------------------------
 
+
+def normalize(text):
+    text = text.lower()
+
+    text = unicodedata.normalize(
+        "NFKD",
+        text
+    ).encode(
+        "ascii",
+        "ignore"
+    ).decode(
+        "utf-8"
+    )
+
+    text = re.sub(
+        r"[^\w\s]",
+        "",
+        text
+    )
+
+    return text.strip()
+
+
 @app.post("/chat")
-async def chat(request: ChatRequest, user = Depends(verify_token)):
+async def chat(
+    request: ChatRequest,
+    user=Depends(verify_token)
+):
     user_input = request.message.strip()
+    print("user input.....", user_input)
 
     if not user_input:
         return {
@@ -74,18 +107,42 @@ async def chat(request: ChatRequest, user = Depends(verify_token)):
             }
         }
 
-    # Convertir input a embedding
-    input_embedding = model.encode(user_input, convert_to_tensor=True)
+    # ==========================
+    # 1. Buscar coincidencia exacta
+    # ==========================
 
-    # Calcular similitud coseno
-    scores = util.cos_sim(input_embedding, question_embeddings)[0]
+    normalized_input = normalize(user_input)
 
-    # Obtener mejor coincidencia
+    for item in qa_data:
+
+        if normalize(item["question"]) == normalized_input:
+
+            return {
+                "response": item["answer"],
+                "confidence": 1.0,
+                "matched_question": item["question"]
+            }
+
+    # ==========================
+    # 2. Si no existe exacta,
+    #    usar SentenceTransformer
+    # ==========================
+
+    input_embedding = model.encode(
+        user_input,
+        convert_to_tensor=True
+    )
+
+    scores = util.cos_sim(
+        input_embedding,
+        question_embeddings
+    )[0]
+
     best_score = float(torch.max(scores))
     best_idx = int(torch.argmax(scores))
 
-    # Validar threshold
     if best_score < SIMILARITY_THRESHOLD:
+
         return {
             "response": {
                 "text": "No entendí tu pregunta, ¿puedes reformularla?",
